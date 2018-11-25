@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Gantt</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css" integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous" />
+    <script
+      src="https://code.jquery.com/jquery-3.3.1.min.js"
+        integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8="
+          crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.3/umd/popper.min.js" integrity="sha384-ZMP7rVo3mIykV+2+9J3UJ46jBk0WLaUAdn689aCwoqbBJiSnjAK/l8WvCWPIPm49" crossorigin="anonymous"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/js/bootstrap.min.js" integrity="sha384-ChfqqxuZUCnJSK3+MXmPNIyE6ZbWh2IMqE241rYiqJxyMiZ6OW/JmZQ5stwEULTy" crossorigin="anonymous"></script>
+	<script type = "text/javascript" src = "https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.22.2/moment-with-locales.min.js"></script>
+    <script src="https://apis.google.com/js/api.js"></script>
+	<script type = "text/javascript" src = "https://www.gstatic.com/charts/loader.js"></script>
+	<script type = "text/javascript" src = "https://cdnjs.cloudflare.com/ajax/libs/bluebird/3.5.3/bluebird.min.js"></script>
+  </head>
+  <body>
+    <h1 id = "title"></h1>
+	<div id = "gantt"></div>
+    <!--Add buttons to initiate auth sequence and sign out-->
+    <button id="authorize_button" style="display: none;">Authorize</button>
+    <button id="signout_button" style="display: none;">Sign Out</button>
+    <pre id="content" style="white-space: pre-wrap;"></pre>
+
+    <script type="text/javascript">
+        var config = null
+        var loadClient = new Promise(function (accept, reject) {
+            gapi.load('client:auth2', accept)
+        });
+
+        loadClient.then(function () {
+	            return new Promise(function (accept, reject) {
+                    google.charts.load('current', {'packages':['gantt']})
+                    google.charts.setOnLoadCallback(function () {
+                        accept();
+                    });
+                })
+            })
+            .then(function () {
+                return jQuery.getJSON("config.json")
+            })
+            .then(function (result) {
+                config = result;
+                return gapi.client.init({
+                  apiKey: config.apiKey,
+                  clientId: config.clientId,
+                  discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
+                  scope: "https://www.googleapis.com/auth/spreadsheets.readonly"
+                });
+            })
+            .then(function () {
+                gapi.auth2.getAuthInstance().isSignedIn.listen(updateSigninStatus);
+                updateSigninStatus(gapi.auth2.getAuthInstance().isSignedIn.get());
+            }).catch(function (error) {
+                console.warn(error)
+            })
+
+        jQuery("#authorize_button").click(function () {
+            gapi.auth2.getAuthInstance().signIn();
+        })
+
+        jQuery("#signout_button").click(function () {
+            gapi.auth2.getAuthInstance().signOut();
+        })
+
+        function updateSigninStatus(signedIn) {
+            if (signedIn) {
+                jQuery("#signout_button").hide();
+                jQuery("#gantt").show();
+                loadGantt();
+            } else {
+                jQuery("#authorize_button").show();
+                jQuery("#gantt").hide();
+            }
+        }
+
+        function loadGantt() {
+            var url = new URL(window.location.href);
+            var sheetId = url.searchParams.get("sheetId");
+            var range = url.searchParams.get("range");
+            var height = url.searchParams.get("height");
+            var startDateString = url.searchParams.get("start");
+            var startDate = null
+
+            if (startDateString) {
+                startDate = moment(startDateString)
+            } else {
+                startDate = new moment()
+            }
+
+            gapi.client.sheets.spreadsheets.get({
+                spreadsheetId : sheetId
+            }).then(function (response) {
+                var result = response.result
+                document.title = result.properties.title
+                document.getElementById("title").appendChild(document.createTextNode(result.properties.title))
+
+                return gapi.client.sheets.spreadsheets.values.get({
+                    spreadsheetId : sheetId,
+                    range : range
+                })
+            }).then(function (response) {
+                var range = response.result
+
+                var data = new google.visualization.DataTable();
+                data.addColumn('string', 'Task ID');
+                data.addColumn('string', 'Task Name');
+                data.addColumn('string', 'Resource');
+                data.addColumn('date', 'Start Date');
+                data.addColumn('date', 'End Date');
+                data.addColumn('number', 'Duration');
+                data.addColumn('number', 'Percent Complete');
+                data.addColumn('string', 'Dependencies');
+
+                for (i = 0;i < range.values.length;i++) {
+                    var row = range.values[i];
+                    var taskStart = null;
+
+                    if (!row[0]) {
+                        return
+                    }
+
+                    if (row[3] && typeof row[3] == "string" && row[3].substr(0,1) == "+") {
+                        taskStart = startDate.clone().add(parseInt(row[3].substr(1),10),'days')
+                    } else if (row[3]) {
+                        taskStart = moment(row[3])
+                    } else if (!row[3] && !row[7]) {
+                        taskStart = startDate.clone()
+                    }
+
+                    var dataRow = [
+                        row[0],
+                        row[1] || "",
+                        row[2] || "",
+                        taskStart ? taskStart.toDate() : null,
+                        row[4] ? moment(row[4]).toDate() : null,
+                        row[5] ? parseInt(row[5], 10) * 60000 * 60 * 24 : null,
+                        row[6] ? parseInt(row[6], 10) : null,
+                        row[7] || null
+                    ]
+
+                    console.log(dataRow)
+
+                    data.addRows([dataRow])
+                }
+
+                var chart = new google.visualization.Gantt(document.getElementById("gantt"))
+                chart.draw(
+                    data,
+                    {
+                        height : height || 500,
+                        gantt: config.gantt || {}
+                    }
+                )
+            })
+        }
+
+    </script>
+  </body>
+</html>
